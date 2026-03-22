@@ -231,6 +231,8 @@ module controller_tb;
         repeat (20)begin
             repeat(20)@(posedge clk);
             floor_req={$random}%8;
+            floor_req={$random}%8;
+            floor_req={$random}%8;
             $display("Expected floor=%d",floor_req);
             floor_input(floor_req);
             stop_input({$random}%2);
