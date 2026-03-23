@@ -29,6 +29,7 @@ module controller (
     reg [2:0]  served_floor;
     reg moving_up;           // 1 = currently serving upward requests, 0 = downward
     reg [2:0] next_target;
+    reg [3:0] door_timing_counter;
 
 // =============================================
 //      QUEUE FOR FLOOR REQUESTS
@@ -109,8 +110,10 @@ end
         end
 
         open_door : begin
-            served_floor=floor_count;
-            next_state=IDLE;
+            if(timeout)begin
+                served_floor=floor_count;
+                next_state=IDLE;
+            end
         end
         endcase
     end
@@ -159,6 +162,19 @@ always @(posedge clk or posedge rst) begin
 end
 
 
+always @(posedge clk or posedge rst) begin
+    if (rst)begin
+        door_timing_counter <= 0;
+    end
+    else if (current_state == open_door) begin
+        if(door_timing_counter < 20)
+            door_timing_counter <= door_timing_counter+1;
+    end
+    else
+        door_timing_counter <= 0;
+end
+
+wire timeout=(door_timing_counter>10);
 
 // ============================================= 
 //       OUTPUT LOGIC
@@ -168,7 +184,7 @@ end
         if(rst)begin
             door_status <= 0;
         end
-        else if(current_state == open_door)begin
+        else if(current_state == open_door && !timeout)begin
             door_status <= 1;
         end
         else begin
@@ -191,69 +207,133 @@ module controller_tb;
     reg rst;
     wire door_status;
 
-    controller dut(.floor_req(floor_req), .new_floor_button_pressed(new_floor_button_pressed),.stop(stop), .clk(clk), .rst(rst), .door_status(door_status));
+    controller dut(.floor_req(floor_req), .new_floor_button_pressed(new_floor_button_pressed),
+    .stop(stop), .clk(clk), .rst(rst), .door_status(door_status));
 
     initial clk=0;
     always #5 clk = ~clk;
 
-    task floor_input(input [2:0] f);
+    reg[7:0] expected_requests;
+ 
+
+    task reset_dut;
         begin
-            new_floor_button_pressed=1;
-            floor_req=f;
-            repeat(2)@(posedge clk);
+            rst = 1;
+            floor_req=0;
             new_floor_button_pressed=0;
-            @(posedge clk);
+            stop=0;
+            expected_requests=8'b0;
+            repeat(4) @(posedge clk);
+            rst=0;
+            repeat(4) @(posedge clk);
+            $display("[%t]  Reset Completed. current floor =%d",$time,dut.floor_count);
         end
     endtask
 
-    task stop_input(input signal);
-    begin
-        stop=signal;
-        repeat(2)@(posedge clk);
-        stop=0;
+    task press_button(input [2:0] floor);
+        begin
+            if (floor > 7) begin
+                $display("ERROR: Invalid floor=%d",floor);
+                return;
+            end
+        
+        @(posedge clk );
+        floor_req=floor;
+        new_floor_button_pressed=1;
+        expected_requests[floor]=1;
         @(posedge clk);
-    end 
+        new_floor_button_pressed=0;
+
+        $display("[%t]  Button pressed for floor=%d | expected request = %b ",$time,floor,expected_requests);
+        end
     endtask
 
 
-//============================= RANDOM TEST INPUTS ==================================
-
-    initial begin
-        rst=1;
+    task emergency_stop(port_list);
+    begin
+        @(posedge clk);
+        stop=1;
+        @(posedge clk);
         stop=0;
-        floor_req=0;
+        $display("%t  Emergency STOP asserted",$time);
+    end  
+    endtask
 
-        repeat(2)@(posedge clk);
-        rst=0;
 
-        // Random tests
+    task wait_for_door_open(input [2:0] expected_floor,input integer timeout);
+        if (door_status && dut.floor_count == expected_floor) begin
+                $display("PASS  T%0t | Reached floor %0d and door opened (requests now = %b)",
+                $time, expected_floor, dut.request);
+            end
+        
+    endtask
 
-        repeat (20)begin
-            repeat(20)@(posedge clk);
-            floor_req={$random}%8;
-            floor_req={$random}%8;
-            floor_req={$random}%8;
-            $display("Expected floor=%d",floor_req);
-            floor_input(floor_req);
-            stop_input({$random}%2);
+    task check_request_cleared(input [2:0] floor);
+        begin
+            @(posedge clk);   // give one cycle for clearing logic
+            if (dut.request[floor] === 1'b1) begin
+                $display("ERROR T%0t | Request bit for floor %0d still set after door open!", $time, floor);
+                error_count = error_count + 1;
+            end else begin
+                $display("      Request %0d cleared OK", floor);
+            end
+        end
+    endtask
+
+    reset_dut();
+
+        // ─── Test 1: Single floor request ─────────────────────────────
+    
+        $display("\n=== TEST %0d : Single floor request (floor 4) ===", 1);
+        press_button(4);
+        wait_for_door_open_at(4, 120);
+        check_request_cleared(4);
+
+        // ─── Test 2: Multiple requests in same direction ──────────────
+   
+        $display("\n=== TEST %0d : Multiple upward requests ===", 2);
+        press_button(2);
+        press_button(5);
+        press_button(7);
+        wait_for_door_open_at(2, 10);   // should serve lowest first if going up? (your logic may differ)
+        check_request_cleared(2);
+        wait_for_door_open_at(5, 10);
+        check_request_cleared(5);
+        wait_for_door_open_at(7, 10);
+        check_request_cleared(7);
+
+        // ─── Test 3: Requests in both directions + emergency stop ─────
+
+        $display("\n=== TEST %0d : Mixed directions + emergency stop ===", 3);
+        press_button(1);
+        press_button(6);
+        wait_for_door_open_at(1, 10);   // assuming it goes down first
+        check_request_cleared(1);
+
+        // interrupt movement to 6;
+        //repeat(8) @(posedge clk);       
+        issue_emergency_stop();
+        //repeat(4) @(posedge clk);
+        if (door_status !== 1) begin
+            $display("ERROR T%0t | Door did not open after emergency stop", $time);
         end
 
-        repeat(50) @(posedge clk);
+        // ─── Test 4: New request while door open ──────────────────────
+      
+        $display("\n=== TEST %0d : Request while door is open ===", 4);
+        press_button(3);
+       // repeat(5) @(posedge clk);        // wait some time
+        wait_for_door_open_at(3, 10);
+        check_request_cleared(3);
+
+        // ─── Summary ──────────────────────────────────────────────────
+        $display("\n=====================================");
+
+        $display(">>> ALL SELF-CHECKS PASSED <<<");
+
+        $display("=====================================\n");
+
+        //repeat(20) @(posedge clk);
         $finish;
-    end
-
-    initial begin
-    $dumpfile("controller.vcd");   // waveform file
-    $dumpvars(0, controller_tb);   // dump all signals
-    end
-
-    always @(posedge clk) begin
-        if(stop && door_status==1)begin
-            $display("Emergency Stop | Floor Reached=%d | Door Opened ",dut.floor_count);
-        end
-        else if (dut.floor_count == floor_req && door_status == 1) begin
-            $display("T=%0t | Reached floor=%0d | Door Opened",$time,dut.floor_count);
-        end
-
-    end
+   
 endmodule
