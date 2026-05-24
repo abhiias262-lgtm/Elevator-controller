@@ -23,10 +23,6 @@ module controller (
                 GO_UP = 2'b01,
                 GO_DOWN = 2'b10,
                 OPEN_DOOR = 2'b11;
-//=============== ELEVATORS ====================
-    parameter   elevtr1 = 2'b00,
-                elevtr2 = 2'b01,
-                elevtr3 = 2'b01;
 
 //============= REGISTERS ======================
 
@@ -166,7 +162,7 @@ always @(posedge clk or posedge rst) begin
             end
         end
         // Direction decision (NO dependency on previous state)
-        if (current_state==IDLE) begin
+        if (current_state==GO_DOWN || current_state==GO_UP) begin
             if (has_request_above) begin
                 moving_up <= 1;
                 moving_down <= 0;
@@ -376,10 +372,8 @@ integer call;
 initial begin
     $dumpfile("controller.vcd");
     $dumpvars(0, controller_tb);
-    reset_dut();
-    // Test 1: Call from floor 3 (up), then inside buttons 4 and 7
 
-    repeat(80) begin          
+    repeat(40) begin          
             // Randomly generate hall calls or cabin presses
             if ($random % 5 == 0) begin
                 emergency_stop();

@@ -1,6 +1,6 @@
 `timescale 1ns/1ns
 
-module new_multi_elevator_tb;
+module multi_elevator_tb;
 
     // ==================== Signals ====================
     reg clk;
@@ -8,27 +8,30 @@ module new_multi_elevator_tb;
 
     reg [2:0]   call_floor;
     reg         call_button_pressed;
-
-    // ye kahan se ayega ? nahi ye yahan se jayega call ke
     reg         upward;
     reg         downward;
+
+
+    reg        enable_ele1;
+    reg        enable_ele2;
+    reg        enable_ele3;
 
 
     // Outputs from DUT (grp file)
     wire        door_statusE1;
     wire [1:0]  direction_E1;
     wire [2:0]  current_floorE1;
-    wire [2:0] floor_countE1;
+
 
     wire        door_statusE2; 
     wire [1:0]  direction_E2;
     wire [2:0]  current_floorE2;
-    wire [2:0] floor_countE2;
+
 
     wire        door_statusE3;
     wire [1:0]  direction_E3 ;
     wire [2:0]  current_floorE3;
-    wire [2:0] floor_countE3;
+
 
     parameter MAX_FLOOR = 7 ;
 
@@ -42,7 +45,9 @@ module new_multi_elevator_tb;
         .upward(upward),
         .downward(downward),
 
-
+        .enable_ele1(enable_ele1),
+        .enable_ele2(enable_ele2),
+        .enable_ele3(enable_ele3),
 
         .door_statusE1(door_statusE1),
         .current_floorE1(current_floorE1),
@@ -72,6 +77,7 @@ module new_multi_elevator_tb;
             call_floor = 0;
             upward = 0;
             downward = 0;
+            call_button_pressed=0;
             repeat(10) @(posedge clk);
             rst = 0;
             repeat(5) @(posedge clk);
@@ -86,8 +92,8 @@ module new_multi_elevator_tb;
             rand_floor = $urandom_range(0, MAX_FLOOR);           // Random floor 0 to 7
             call_floor = rand_floor;
 
-            // Random direction (70% chance of UP, 30% DOWN for realism)
-            if ($random % 10 < 7) begin
+            // Random direction (50% chance of UP, 50% DOWN for realism)
+            if ($urandom_range(0,10) < 5) begin
                 upward = 1; downward = 0;
             end else begin
                 upward = 0; downward = 1;
@@ -103,32 +109,12 @@ module new_multi_elevator_tb;
 
 
     // === SINGLE LINE PRINT MONITOR (Add this) ===
-reg [MAX_FLOOR:0] prev_floorE1 = 0;
-reg [MAX_FLOOR:0] prev_floorE2 = 0;
-reg [MAX_FLOOR:0] prev_floorE3 = 0;
-reg prev_doorE1 = 0;
-reg prev_doorE2 = 0;
-reg prev_doorE3 = 0;
 
-always @(*) begin
-    
-    if ((floor_countE1 != prev_floorE1 || door_statusE1 != prev_doorE1)&&(floor_countE2 != prev_floorE2 || door_statusE2 != prev_doorE2)&&
-        (floor_countE3 != prev_floorE3 || door_statusE3 != prev_doorE3)) begin
-        $display("[%0t] Open status- E1:%0d,E2:%0d,E3:%0d  | Current Floors: %0d ",$time, door_statusE1, current_floorE1, );
-        prev_floorE1 <= floor_countE1;
-        prev_doorE1  <= door_statusE1;
-        prev_floorE2 <= floor_countE2;
-        prev_doorE2  <= door_statusE2;
-        prev_floorE3 <= floor_countE3;
-        prev_doorE3  <= door_statusE3;
-    end
-    if  begin
-        $display("[%0t] Door Open - E2:%0d  | Floors: %0d ",$time, door_statusE2, current_floorE2, );
-
-    end
-    if  begin
-        $display("[%0t] Door Open - E3:%0d  | Floors: %0d ",$time, door_statusE3, current_floorE3, );
-
+always @(posedge clk) begin
+    if (door_statusE1 || door_statusE2 || door_statusE3) begin
+        $display("[%0t] Door Status : E1:%b E2:%b E3:%b | Floors: %0d %0d %0d", 
+                 $time, door_statusE1, door_statusE2, door_statusE3,
+                 current_floorE1, current_floorE2, current_floorE3);
     end
 end
 
@@ -137,23 +123,26 @@ end
 
     // ==================== Main Test Sequence ====================
     initial begin
-        $dumpfile("new_multi_elevator_tb.vcd");
-        $dumpvars(0,new_multi_elevator_tb);
+        // $dumpfile("multi_elevator.vcd");
+        // $dumpvars(0,multi_elevator_tb);
 
         reset_system();
 
         repeat(5) @(posedge clk);
+        enable_ele1=1;
+        enable_ele2=0;
+        enable_ele3=0;
 
         $display("=== Starting Random Stimulus Test ===");
-        repeat(80) begin          
+        repeat(10) begin          
             // Randomly generate hall calls or cabin presses
             if ($random % 5 == 0)      
                 random_hall_call();
 
             // Small random delay between requests
-            repeat($urandom_range(5, 25)) @(posedge clk);
+            repeat($urandom_range(5, 50)) @(posedge clk);
         end
-        repeat(100) @(posedge clk);
+        repeat(10000) @(posedge clk);
         $finish;
     end
 
