@@ -24,8 +24,10 @@ module elevator_dispatcher (
     input [1:0]     direction_E2,
     input [1:0]     direction_E3,
 
-    // output to elevator directly not to grp that's why these are assigned as wire 
-    output reg [1:0] assign_selected,
+    // output reg [1:0] assign_selected,
+    output reg new_call_E1,
+    output reg new_call_E2,
+    output reg new_call_E3,
 
     output reg [2:0] assigned_floor_E1,
     output reg       assigned_dir_E1,
@@ -35,147 +37,129 @@ module elevator_dispatcher (
   
     output reg [2:0] assigned_floor_E3,
     output reg       assigned_dir_E3
-
 );
-    // Max floor count 
+
     parameter MAX_FLOOR = 7;
 
-    // signal to check if any request served or not if served than that floor count assigned to it .
-    reg [1:0] served;
+    // hall_request[floor][0] = pending flag, [1] = direction (1=UP)
+    reg [1:0] hall_request [0:MAX_FLOOR];
 
+    //  Separate valid flag and floor index
+    // 'served' was dual-use (sometimes floor index, sometimes constant 1).
+    // Also the old 'if (served != 0)' check prevented clearing floor 0.
 
-    // the incoming hall requests are stored here 
-    reg [1:0] hall_request [0:MAX_FLOOR];   
-
+    reg         served_valid;
+    reg [2:0]   served_floor;
 
     reg [3:0] cost_E1, cost_E2, cost_E3;
     integer j;
 
-
-    // ====================== Store New Hall Calls ======================
+    // ====================== Store / Clear Hall Calls ======================
+    //  Clearing logic moved inside else branch so it doesn't
+    //              execute during reset when 'served_valid' may hold stale data.
     always @(posedge clk or posedge rst) begin
-
-        // sets zero to all places in array
         if (rst) begin
-            for ( j=0; j<=MAX_FLOOR; j=j+1) begin
-                hall_request[j][0]<= 0;
-                hall_request[j][1]<= 0;
-            end
+            for (j = 0; j <= MAX_FLOOR; j = j + 1)
+                hall_request[j] <= 2'b00;
+        end else begin
+            // Register new hall call
+            if (call_button_pressed)
+                // [1]=direction(upward), [0]=pending flag
+                hall_request[call_floor] <= {upward, 1'b1};
+
+            //Clear the served floor using the separated flag+index.
+            // served_valid is set by the cost block one cycle earlier.
+            if (served_valid)
+                hall_request[served_floor] <= 2'b00;
         end
-                // update the array with incoming hall requests
-        else begin
-            if (call_button_pressed) begin
-                hall_request[call_floor][0]<=1;
-                if (upward) begin
-                    hall_request[call_floor][1]<=1;
-                end
-                else begin
-                    hall_request[call_floor][1]<=0;
-                end
-            end
-        end
-
-        
-         // clears the request from the array when the elevator is assigned 
-        if (served != 0) begin
-            hall_request[served][0]<=0;
-            hall_request[served][1]<=0;
-        end
-
-
-
     end
 
     // ====================== Cost + Assignment Logic ======================
 
     integer i;
+
+    // Temp variables — use blocking (=) so the for-loop can see the flag immediately
+    reg [2:0]  t_floor;
+    reg [1:0]  t_selected;
+    reg        t_valid;
+    reg        t_dir;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            assigned_floor_E1 <= 0; 
-            assigned_floor_E2 <= 0; 
-            assigned_floor_E3 <= 0; 
-            assign_selected <=0;
-            served<=0;
-        end
-        else begin
-            // Default: no assignment this cycle
-            assign_selected <= 0;
-            served<=0;
+            assigned_floor_E1 <= 0; assigned_dir_E1 <= 0;
+            assigned_floor_E2 <= 0; assigned_dir_E2 <= 0;
+            assigned_floor_E3 <= 0; assigned_dir_E3 <= 0;
+            // assign_selected   <= 0;
+            served_valid      <= 0;
+            served_floor      <= 0;
+            new_call_E1 <= 0; new_call_E2 <= 0; new_call_E3 <= 0;
+        end else begin
+            // Default: nothing dispatched this cycle
+            // assign_selected <= 0;
+            served_valid    <= 0;
+            new_call_E1 <= 0; new_call_E2 <= 0; new_call_E3 <= 0;
 
-            // Scan all floors from bottom to top every clock pulse 
+            // Initialise temp working registers with blocking assignment
+            t_valid    = 0;
+            t_floor    = 0;
+            t_dir      = 0;
+            t_selected = 0;
+
+            //  Use blocking t_valid flag so only the FIRST (lowest)
+            //              pending floor is picked.  Previously, non-blocking '<=
+            //              caused the LAST matching floor to overwrite earlier ones.
             for (i = 0; i <= MAX_FLOOR; i = i + 1) begin
-                if (hall_request[i][0]) begin   // if there is a pending request at floor i
+                if (hall_request[i][0] && !t_valid && |{enable_ele1, enable_ele2, enable_ele3}) begin
+                    t_floor = i;
+                    t_dir   = hall_request[i][1];
+                    t_valid = 1;  // blocking — stops further iterations from matching
 
+                    // ---- Determine which elevator to dispatch ----
 
-                    // if only one elevator is enabled 
-                    if (enable_ele1==1 && enable_ele2==0 && enable_ele3==0) begin
-                            assigned_floor_E1 <= i;
-                            assigned_dir_E1   <= hall_request[i][1];
-                            served <= i;
-                            assign_selected <= 2'd1;
+                    // Single elevator enabled
+                    if (enable_ele1 && !enable_ele2 && !enable_ele3) begin
+                        t_selected = 2'd1;
                     end
-                    else if (enable_ele1==0 && enable_ele2==1 && enable_ele3==0)begin
-                            assigned_floor_E2 <= i;
-                            assigned_dir_E2   <= hall_request[i][1];
-                            served <= i;
-                            assign_selected<=2'd2;
+                    else if (!enable_ele1 && enable_ele2 && !enable_ele3) begin
+                        t_selected = 2'd2;
                     end
-                    else if (enable_ele1==0 && enable_ele2==0 && enable_ele3==1) begin
-                            assigned_floor_E3 <= i;
-                            assigned_dir_E3   <= hall_request[i][1];
-                            served <= i;
-                            assign_selected<=2'd3;
+                    else if (!enable_ele1 && !enable_ele2 && enable_ele3) begin
+                        t_selected = 2'd3;
                     end
-
-
-                    // if any of the two elevators are enabled
-                    else if (enable_ele1==1 && enable_ele2==1 && enable_ele3==0) begin
-                        cost_E1 = get_cost(current_floor_E1, direction_E1, i, hall_request[i][1]);
-                        cost_E2 = get_cost(current_floor_E2, direction_E2, i, hall_request[i][1]);
-                        cost_E3 = 20;
-                    end
-                    else if (enable_ele1==1 && enable_ele2==0 && enable_ele3==1) begin
-                        cost_E1 = get_cost(current_floor_E1, direction_E1, i, hall_request[i][1]);
-                        cost_E3 = get_cost(current_floor_E3, direction_E3, i, hall_request[i][1]);
-                        cost_E2 = 20;
-
-                    end
-                    else if (enable_ele1==0 && enable_ele2==1 && enable_ele3==1) begin
-                         cost_E3 = get_cost(current_floor_E3, direction_E3, i, hall_request[i][1]);
-                         cost_E2 = get_cost(current_floor_E2, direction_E2, i, hall_request[i][1]);
-                         cost_E1 = 20;
-                    end
-
-
-                    // if all three elevators are enabled 
                     else begin
-                        cost_E1 = get_cost(current_floor_E1, direction_E1, i, hall_request[i][1]);
-                        cost_E2 = get_cost(current_floor_E2, direction_E2, i, hall_request[i][1]);
-                        cost_E3 = get_cost(current_floor_E3, direction_E3, i, hall_request[i][1]);
+                        // Two or three elevators enabled: compute cost for each.
+                        // Disabled elevators get worst-case cost (15) so they are
+                        // never selected.
+                        cost_E1 = enable_ele1 ?
+                            get_cost(current_floor_E1, direction_E1, i, hall_request[i][1]) : 4'd15;
+                        cost_E2 = enable_ele2 ?
+                            get_cost(current_floor_E2, direction_E2, i, hall_request[i][1]) : 4'd15;
+                        cost_E3 = enable_ele3 ?
+                            get_cost(current_floor_E3, direction_E3, i, hall_request[i][1]) : 4'd15;
+
+
+                        if (cost_E1 <= cost_E2 && cost_E1 <= cost_E3)
+                            t_selected = 2'd1;
+                        else if (cost_E2 <= cost_E3)
+                            t_selected = 2'd2;
+                        else
+                            t_selected = 2'd3;
                     end
-
-
-                    // Assign to the elevator with lowest cost
-                        if ((cost_E1 <= cost_E2 && cost_E1 <= cost_E3) && (cost_E1 < 2)) begin:costly
-                            assigned_floor_E1 <= i;
-                            assigned_dir_E1   <= hall_request[i][1];
-                            served          <= 1;
-                            assign_selected<=2'd1;
-                        end
-                        else if ((cost_E2 <= cost_E3)&& (cost_E2 < 2)) begin
-                            assigned_floor_E2 <= i;
-                            assigned_dir_E2   <= hall_request[i][1];
-                            served              <= 1;
-                            assign_selected<=2'd2;
-                        end
-                        else if(cost_E3 < 2) begin
-                            assigned_floor_E3 <= i;
-                            assigned_dir_E3   <= hall_request[i][1];
-                            served              <= 1;
-                            assign_selected<=2'd3;
-                        end
-                
                 end
+            end // for
+
+            // Apply the assignment made during the scan
+            if (t_valid) begin
+                served_valid    <= 1;       // tell Block A to clear this floor next cycle
+                served_floor    <= t_floor; // always the actual floor index
+                // assign_selected <= t_selected;
+
+                // Only update the floor/direction registers of the selected elevator
+                case (t_selected)
+                    2'd1: begin assigned_floor_E1<=t_floor; assigned_dir_E1<=t_dir; new_call_E1<=1; end
+                    2'd2: begin assigned_floor_E2<=t_floor; assigned_dir_E2<=t_dir; new_call_E2<=1; end
+                    2'd3: begin assigned_floor_E3<=t_floor; assigned_dir_E3<=t_dir; new_call_E3<=1; end
+                endcase
             end
         end
     end
@@ -183,21 +167,22 @@ module elevator_dispatcher (
 
     // ====================== Cost Function ======================
     function [3:0] get_cost;
-        input [2:0] curr_floor;     //current floor of the elevator
-        input [1:0] dir;            //current direction of the elevator
-        input [2:0] req_floor;      //where to go (floor)
-        input       req_dir;        //in which direction to go
+        input [2:0] curr_floor;     // current floor of the elevator
+        input [1:0] dir;            // current direction of the elevator (00=IDLE,01=UP,10=DN)
+        input [2:0] req_floor;      // requested floor
+        input       req_dir;        // requested direction (1=UP, 0=DOWN)
 
         begin
-             // Both going UP
-            if (dir == 2'b01 && req_dir == 1)     
+            // Elevator going UP, call is also UP
+            if (dir == 2'b01 && req_dir == 1)
                 get_cost = (curr_floor > req_floor) ? 12 : (req_floor - curr_floor);
-            // Both going DOWN
+            // Elevator going DOWN, call is also DOWN
             else if (dir == 2'b10 && req_dir == 0)
                 get_cost = (curr_floor < req_floor) ? 12 : (curr_floor - req_floor);
-            // if elevator is not moving 
+            // Elevator is idle
             else if (dir == 2'b00)
                 get_cost = (req_floor > curr_floor) ? (req_floor - curr_floor) : (curr_floor - req_floor);
+            // Direction mismatch — penalise
             else
                 get_cost = 5 + (req_floor > curr_floor ? (req_floor - curr_floor) : (curr_floor - req_floor));
         end
